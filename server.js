@@ -47,10 +47,9 @@ server.tool(
   }
 );
 
-// トランスポート設定
+// トランスポート設定（SSE対応）
 const transport = new StreamableHTTPServerTransport({
   path: "/mcp",
-  enableJsonResponse: true,
 });
 
 const httpServer = createServer((req, res) => {
