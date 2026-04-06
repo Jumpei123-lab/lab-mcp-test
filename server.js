@@ -47,9 +47,15 @@ server.tool(
   }
 );
 
-// HTTP サーバ起動
-const transport = new StreamableHTTPServerTransport({ path: "/mcp" });
-const httpServer = createServer((req, res) => transport.handleRequest(req, res));
+// トランスポート設定
+const transport = new StreamableHTTPServerTransport({
+  path: "/mcp",
+  enableJsonResponse: true,
+});
+
+const httpServer = createServer((req, res) => {
+  transport.handleRequest(req, res);
+});
 
 await server.connect(transport);
 
