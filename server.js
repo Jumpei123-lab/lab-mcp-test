@@ -6,21 +6,18 @@ import { z } from "zod";
 
 const slack = new WebClient(process.env.SLACK_BOT_TOKEN);
 
-// リクエストごとに新しいサーバーインスタンスを作成
 function createMcpServer() {
   const server = new McpServer({
     name: "slack-mcp",
     version: "1.0.0",
   });
 
-  // チャンネル一覧を取得
   server.tool("list_channels", "List Slack channels", {}, async () => {
     const result = await slack.conversations.list();
     const channels = result.channels.map(c => `${c.name} (${c.id})`).join("\n");
     return { content: [{ type: "text", text: channels }] };
   });
 
-  // メッセージを送信
   server.tool(
     "send_message",
     "Send a message to a Slack channel",
@@ -34,7 +31,6 @@ function createMcpServer() {
     }
   );
 
-  // チャンネル履歴を取得
   server.tool(
     "get_history",
     "Get message history from a channel",
@@ -52,32 +48,24 @@ function createMcpServer() {
   return server;
 }
 
-// HTTPサーバー
+// セッション管理
+const sessions = {};
+
 const httpServer = createServer(async (req, res) => {
-  if (req.method === "POST" && req.url === "/mcp") {
-    const transport = new StreamableHTTPServerTransport({
-      path: "/mcp",
-    });
-
-    const server = createMcpServer();
-    await server.connect(transport);
-    await transport.handleRequest(req, res);
+  if (req.url !== "/mcp") {
+    res.writeHead(404);
+    res.end("Not found");
     return;
   }
 
-  if (req.method === "GET" && req.url === "/mcp") {
-    const transport = new StreamableHTTPServerTransport({
-      path: "/mcp",
-    });
+  const transport = new StreamableHTTPServerTransport({
+    path: "/mcp",
+    sessionIdGenerator: () => crypto.randomUUID(),
+  });
 
-    const server = createMcpServer();
-    await server.connect(transport);
-    await transport.handleRequest(req, res);
-    return;
-  }
-
-  res.writeHead(404);
-  res.end("Not found");
+  const server = createMcpServer();
+  await server.connect(transport);
+  await transport.handleRequest(req, res);
 });
 
 const PORT = process.env.PORT || 3000;
