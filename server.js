@@ -48,7 +48,6 @@ function createMcpServer() {
   return server;
 }
 
-// セッションをIDで管理
 const transports = new Map();
 
 const httpServer = createServer(async (req, res) => {
@@ -59,20 +58,21 @@ const httpServer = createServer(async (req, res) => {
   }
 
   try {
-    // セッションIDをヘッダーから取得
     const sessionId = req.headers["mcp-session-id"];
 
     if (req.method === "POST") {
       let transport;
 
       if (sessionId && transports.has(sessionId)) {
-        // 既存セッションを再利用
         transport = transports.get(sessionId);
       } else {
-        // 新規セッションを作成
+        // 新規セッション：リクエストボディを読んでinitializeか確認
         transport = new StreamableHTTPServerTransport({
           path: "/mcp",
           sessionIdGenerator: () => crypto.randomUUID(),
+          onsessioninitialized: (id) => {
+            transports.set(id, transport);
+          },
         });
 
         transport.onclose = () => {
@@ -83,10 +83,6 @@ const httpServer = createServer(async (req, res) => {
 
         const server = createMcpServer();
         await server.connect(transport);
-
-        if (transport.sessionId) {
-          transports.set(transport.sessionId, transport);
-        }
       }
 
       await transport.handleRequest(req, res);
@@ -95,19 +91,17 @@ const httpServer = createServer(async (req, res) => {
 
     if (req.method === "GET") {
       if (sessionId && transports.has(sessionId)) {
-        const transport = transports.get(sessionId);
-        await transport.handleRequest(req, res);
+        await transports.get(sessionId).handleRequest(req, res);
       } else {
         res.writeHead(400);
-        res.end("Session ID required for GET");
+        res.end("Session ID required");
       }
       return;
     }
 
     if (req.method === "DELETE") {
       if (sessionId && transports.has(sessionId)) {
-        const transport = transports.get(sessionId);
-        await transport.handleRequest(req, res);
+        await transports.get(sessionId).handleRequest(req, res);
         transports.delete(sessionId);
       } else {
         res.writeHead(404);
@@ -120,9 +114,11 @@ const httpServer = createServer(async (req, res) => {
     res.end("Method not allowed");
 
   } catch (err) {
-    console.error("Error handling request:", err);
-    res.writeHead(500);
-    res.end("Internal server error");
+    console.error("Error:", err);
+    if (!res.headersSent) {
+      res.writeHead(500);
+      res.end("Internal server error");
+    }
   }
 });
 
