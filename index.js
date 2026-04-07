@@ -1,44 +1,52 @@
 import express from "express";
-import fetch from "node-fetch";
 
 const app = express();
-app.use(express.json());
 
+// JSONをそのまま安全に受け取る設定
+app.use(express.json({ strict: false }));
+
+// MCP エンドポイント
 app.post("/mcp", async (req, res) => {
-  const { jsonrpc, method, params, id } = req.body;
+  try {
+    const { jsonrpc, id, method, params } = req.body;
 
-  if (method === "slack.postMessage") {
-    const response = await fetch(
+    // 今回は Slack 投稿のみ対応
+    if (method !== "slack.postMessage") {
+      return res.status(400).json({
+        jsonrpc: "2.0",
+        id,
+        error: { message: "Unknown method" }
+      });
+    }
+
+    // Slack Web API 呼び出し
+    const slackResponse = await fetch(
       "https://slack.com/api/chat.postMessage",
       {
         method: "POST",
         headers: {
+          // ✅ Bot トークン
           "Authorization": `Bearer ${process.env.SLACK_BOT_TOKEN}`,
-          "Content-Type": "application/json",
+
+          // ✅ ここが超重要（日本語文字化け対策）
+          "Content-Type": "application/json; charset=utf-8"
         },
         body: JSON.stringify({
           channel: params.channel,
-          text: params.text,
-        }),
+          text: params.text
+        })
       }
     );
 
-    const result = await response.json();
+    const result = await slackResponse.json();
 
+    // MCP（JSON-RPC）形式でレスポンス
     return res.json({
       jsonrpc: "2.0",
       id,
-      result,
+      result
     });
-  }
 
-  res.status(400).json({
-    jsonrpc: "2.0",
-    id,
-    error: { message: "Unknown method" },
-  });
-});
-
-app.listen(3000, () => {
-  console.log("MCP Server running");
-});
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({
