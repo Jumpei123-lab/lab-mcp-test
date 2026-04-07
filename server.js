@@ -6,88 +6,120 @@ import { z } from "zod";
 
 const slack = new WebClient(process.env.SLACK_BOT_TOKEN);
 
-/* =========================
-   MCP Server（1回だけ作成）
-   ========================= */
-const mcpServer = new McpServer({
-  name: "slack-mcp",
-  version: "1.0.0",
+function createMcpServer() {
+  const server = new McpServer({
+    name: "slack-mcp",
+    version: "1.0.0",
+  });
 
-  // ★超重要：対応プロトコルを明示
-  protocolVersion: "2024-11-05",
+  server.tool("list_channels", "List Slack channels", {}, async () => {
+    const result = await slack.conversations.list();
+    const channels = result.channels.map(c => `${c.name} (${c.id})`).join("\n");
+    return { content: [{ type: "text", text: channels }] };
+  });
 
-  capabilities: {
-    tools: {},
-  },
-});
+  server.tool(
+    "send_message",
+    "Send a message to a Slack channel",
+    {
+      channel: z.string().describe("Channel ID or name"),
+      text: z.string().describe("Message text"),
+    },
+    async ({ channel, text }) => {
+      await slack.chat.postMessage({ channel, text });
+      return { content: [{ type: "text", text: "Message sent!" }] };
+    }
+  );
 
-/* ---------- Tools ---------- */
+  server.tool(
+    "get_history",
+    "Get message history from a channel",
+    {
+      channel: z.string().describe("Channel ID"),
+      limit: z.number().optional().describe("Number of messages (default 10)"),
+    },
+    async ({ channel, limit = 10 }) => {
+      const result = await slack.conversations.history({ channel, limit });
+      const messages = result.messages.map(m => `${m.ts}: ${m.text}`).join("\n");
+      return { content: [{ type: "text", text: messages }] };
+    }
+  );
 
-mcpServer.tool("list_channels", "List Slack channels", {}, async () => {
-  const result = await slack.conversations.list();
-  const channels = (result.channels ?? [])
-    .map(c => `${c.name} (${c.id})`)
-    .join("\n");
+  return server;
+}
 
-  return {
-    content: [{ type: "text", text: channels || "No channels found" }],
-  };
-});
+const transports = new Map();
 
-mcpServer.tool(
-  "send_message",
-  "Send a message to a Slack channel",
-  {
-    channel: z.string(),
-    text: z.string(),
-  },
-  async ({ channel, text }) => {
-    await slack.chat.postMessage({ channel, text });
-    return {
-      content: [{ type: "text", text: "Message sent!" }],
-    };
-  }
-);
-
-mcpServer.tool(
-  "get_history",
-  "Get message history from a channel",
-  {
-    channel: z.string(),
-    limit: z.number().optional(),
-  },
-  async ({ channel, limit = 10 }) => {
-    const result = await slack.conversations.history({ channel, limit });
-    const messages = (result.messages ?? [])
-      .map(m => `${m.ts}: ${m.text}`)
-      .join("\n");
-
-    return {
-      content: [{ type: "text", text: messages || "No messages" }],
-    };
-  }
-);
-
-/* =========================
-   Transport（1回だけ）
-   ========================= */
-const transport = new StreamableHTTPServerTransport({
-  path: "/mcp",
-});
-
-await mcpServer.connect(transport);
-
-/* =========================
-   HTTP Server
-   ========================= */
-const httpServer = createServer((req, res) => {
-  if (req.url === "/mcp") {
-    transport.handleRequest(req, res);
+const httpServer = createServer(async (req, res) => {
+  if (req.url !== "/mcp") {
+    res.writeHead(404);
+    res.end("Not found");
     return;
   }
 
-  res.writeHead(404);
-  res.end("Not found");
+  try {
+    const sessionId = req.headers["mcp-session-id"];
+
+    if (req.method === "POST") {
+      let transport;
+
+      if (sessionId && transports.has(sessionId)) {
+        transport = transports.get(sessionId);
+      } else {
+        // 新規セッション：リクエストボディを読んでinitializeか確認
+        transport = new StreamableHTTPServerTransport({
+          path: "/mcp",
+          sessionIdGenerator: () => crypto.randomUUID(),
+          onsessioninitialized: (id) => {
+            transports.set(id, transport);
+          },
+        });
+
+        transport.onclose = () => {
+          if (transport.sessionId) {
+            transports.delete(transport.sessionId);
+          }
+        };
+
+        const server = createMcpServer();
+        await server.connect(transport);
+      }
+
+      await transport.handleRequest(req, res);
+      return;
+    }
+
+    if (req.method === "GET") {
+      if (sessionId && transports.has(sessionId)) {
+        await transports.get(sessionId).handleRequest(req, res);
+      } else {
+        res.writeHead(400);
+        res.end("Session ID required");
+      }
+      return;
+    }
+
+    if (req.method === "DELETE") {
+      if (sessionId && transports.has(sessionId)) {
+        await transports.get(sessionId).handleRequest(req, res);
+        transports.delete(sessionId);
+      } else {
+        res.writeHead(404);
+        res.end("Session not found");
+      }
+      return;
+    }
+
+    res.writeHead(405);
+    res.end("Method not allowed");
+
+  } catch (err) {
+    console.error("Error:", err);
+    if (!res.headersSent) {
+      res.writeHead(500);
+      res.end("Internal server error");
+    }
+  }
 });
 
 const PORT = process.env.PORT || 3000;
